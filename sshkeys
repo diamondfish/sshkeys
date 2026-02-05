@@ -1,0 +1,77 @@
+#!/bin/bash
+# ===================================================================================
+#  sshkeys - Description.
+#  Version 1.0.3
+# ===================================================================================
+#  Author:  Johan Bjarnle
+#  Year:    2025
+#  License: MIT
+#  Copyright © 2025 Johan Bjarnle
+# ===================================================================================
+
+set -e
+
+VERSION="1.0.3"
+REPO_URL="https://raw.githubusercontent.com/diamondfish/sshkeys/master/sshkeys"
+APP_NAME="sshkeys"
+INSTALL_PATH="/usr/local/bin/$APP_NAME"
+
+show_usage() {
+  echo "Usage: $APP_NAME [options] directory"
+  echo "Description"
+  echo ""
+  echo "Options:"
+  echo "  -v, --version   Show version number."
+  echo "  -h, --help      Show this help message."
+  echo "  -u, --update    Update $APP_NAME to the latest version."
+  exit 0
+}
+
+show_version() {
+  echo "$APP_NAME version $VERSION"
+  echo "Copyright © 2025 Johan Bjarnle"
+  echo "License: MIT"
+  exit 0
+}
+
+self_update() {
+  echo "Updating $APP_NAME..."
+  if [ ! -w "$(dirname "$INSTALL_PATH")" ]; then
+    echo "You need sudo privileges to update $APP_NAME."
+    sudo curl -fsSL "$REPO_URL" -o "$INSTALL_PATH"
+    sudo chmod +x "$INSTALL_PATH"
+  else
+    curl -fsSL "$REPO_URL" -o "$INSTALL_PATH"
+    chmod +x "$INSTALL_PATH"
+  fi
+  echo "$APP_NAME updated successfully!"
+  "$INSTALL_PATH" --version
+  exit 0
+}
+
+# Set default values
+key=""
+
+# Parse arguments
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      show_usage
+      ;;
+    -v|--version)
+      show_version
+      ;;
+    -u|--update)
+      self_update
+      ;;
+    -*)
+      echo "Unknown option: $arg"
+      show_usage
+      ;;
+    *)
+      key="$arg"
+      ;;
+  esac
+done
+
+
