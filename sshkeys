@@ -1,0 +1,506 @@
+#!/bin/bash
+# ===================================================================================
+#  sshkeys - Manage SSH authorized_keys file.
+#  Version 1.0.0
+# ===================================================================================
+#  Author:  Johan Bjarnle
+#  Year:    2025
+#  License: MIT
+#  Copyright © 2025 Johan Bjarnle
+# ===================================================================================
+
+set -e
+
+VERSION="1.0.0"
+REPO_URL="https://raw.githubusercontent.com/diamondfish/sshkeys/master/sshkeys"
+APP_NAME="sshkeys"
+INSTALL_PATH="/usr/local/bin/$APP_NAME"
+
+# Valid SSH key types
+VALID_KEY_TYPES=("ssh-rsa" "ssh-dss" "ssh-ed25519" "ssh-ed448" "ecdsa-sha2-nistp256" "ecdsa-sha2-nistp384" "ecdsa-sha2-nistp521" "sk-ssh-ed25519@openssh.com" "sk-ecdsa-sha2-nistp256@openssh.com")
+
+show_usage() {
+  echo "Usage: $APP_NAME [options]"
+  echo "Manage SSH authorized_keys file."
+  echo ""
+  echo "Actions (at least one required):"
+  echo "  -l, --list      List all keys in authorized_keys"
+  echo "  -a, --add       Add an SSH key (requires -k)"
+  echo "  -d, --delete    Delete an SSH key (requires -k)"
+  echo ""
+  echo "Options:"
+  echo "  -k, --key       The SSH key to add or delete"
+  echo "  -u, --user      Specify target user (default: current user)"
+  echo "  -v, --version   Show version number"
+  echo "  -h, --help      Show this help message"
+  echo "  --update        Update $APP_NAME to the latest version"
+  echo ""
+  echo "Examples:"
+  echo "  $APP_NAME -l                                    # List keys for current user"
+  echo "  $APP_NAME -l -u www-data                        # List keys for www-data"
+  echo "  $APP_NAME -ak 'ssh-rsa AAAA... user@host'       # Add a key"
+  echo "  $APP_NAME -alk 'ssh-rsa AAAA... user@host'      # Add a key and list"
+  echo "  $APP_NAME -dk 'ssh-rsa AAAA... user@host'       # Delete a key"
+  echo "  $APP_NAME -dlk 'ssh-rsa AAAA... user@host'      # Delete a key and list"
+  echo "  $APP_NAME -u www-data -ak 'ssh-ed25519 AAAA...' # Add key for another user"
+  exit 0
+}
+
+show_version() {
+  echo "$APP_NAME version $VERSION"
+  echo "Copyright © 2025 Johan Bjarnle"
+  echo "License: MIT"
+  exit 0
+}
+
+self_update() {
+  echo "Updating $APP_NAME..."
+  if [ ! -w "$(dirname "$INSTALL_PATH")" ]; then
+    echo "You need sudo privileges to update $APP_NAME."
+    sudo curl -fsSL "$REPO_URL" -o "$INSTALL_PATH"
+    sudo chmod +x "$INSTALL_PATH"
+  else
+    curl -fsSL "$REPO_URL" -o "$INSTALL_PATH"
+    chmod +x "$INSTALL_PATH"
+  fi
+  echo "$APP_NAME updated successfully!"
+  "$INSTALL_PATH" --version
+  exit 0
+}
+
+# Extract key type and key data (without comment) from a full SSH key line
+# Returns: "key_type key_data" (without the comment part)
+extract_key_signature() {
+  local full_key="$1"
+  echo "$full_key" | awk '{print $1, $2}'
+}
+
+# Get home directory for a user
+get_user_home() {
+  local username="$1"
+  getent passwd "$username" | cut -d: -f6
+}
+
+# Check if user exists
+user_exists() {
+  local username="$1"
+  id "$username" &>/dev/null
+}
+
+# Validate SSH key format
+validate_key() {
+  local key="$1"
+  
+  # Check that key has at least 2 parts
+  local key_parts=($key)
+  if [ ${#key_parts[@]} -lt 2 ]; then
+    echo "Error: Invalid SSH key format."
+    echo "Expected format: ssh-rsa|ssh-ed25519|... <base64-key> [comment]"
+    exit 1
+  fi
+
+  # Validate key type
+  local key_type="${key_parts[0]}"
+  local type_valid=false
+  for valid_type in "${VALID_KEY_TYPES[@]}"; do
+    if [ "$key_type" = "$valid_type" ]; then
+      type_valid=true
+      break
+    fi
+  done
+
+  if [ "$type_valid" = false ]; then
+    echo "Error: Unrecognized SSH key type: $key_type"
+    echo "Supported types: ${VALID_KEY_TYPES[*]}"
+    exit 1
+  fi
+}
+
+# Resolve target user and paths
+resolve_target() {
+  local user="$1"
+  
+  if [ -z "$user" ]; then
+    target_user="$USER"
+    target_home="$HOME"
+  else
+    if ! user_exists "$user"; then
+      echo "Error: User '$user' does not exist."
+      exit 1
+    fi
+    target_user="$user"
+    target_home=$(get_user_home "$user")
+    if [ -z "$target_home" ]; then
+      echo "Error: Could not determine home directory for user '$user'."
+      exit 1
+    fi
+  fi
+
+  ssh_dir="$target_home/.ssh"
+  auth_keys_file="$ssh_dir/authorized_keys"
+  
+  # Determine if we need sudo
+  needs_sudo=false
+  if [ "$target_user" != "$USER" ]; then
+    needs_sudo=true
+  fi
+}
+
+# Check if authorized_keys file exists
+check_auth_keys_exists() {
+  if [ ! -f "$auth_keys_file" ]; then
+    echo "Error: No authorized_keys file found at $auth_keys_file"
+    exit 1
+  fi
+}
+
+# Ensure .ssh directory and authorized_keys exist with proper permissions
+ensure_ssh_setup() {
+  # Create .ssh directory if it doesn't exist
+  if [ ! -d "$ssh_dir" ]; then
+    echo "Creating $ssh_dir..."
+    if [ "$needs_sudo" = true ]; then
+      sudo mkdir -p "$ssh_dir"
+      sudo chown "$target_user:$target_user" "$ssh_dir"
+      sudo chmod 700 "$ssh_dir"
+    else
+      mkdir -p "$ssh_dir"
+      chmod 700 "$ssh_dir"
+    fi
+  fi
+
+  # Create authorized_keys if it doesn't exist
+  if [ ! -f "$auth_keys_file" ]; then
+    echo "Creating $auth_keys_file..."
+    if [ "$needs_sudo" = true ]; then
+      sudo touch "$auth_keys_file"
+      sudo chown "$target_user:$target_user" "$auth_keys_file"
+      sudo chmod 600 "$auth_keys_file"
+    else
+      touch "$auth_keys_file"
+      chmod 600 "$auth_keys_file"
+    fi
+  fi
+}
+
+# List authorized keys
+list_keys() {
+  check_auth_keys_exists
+  
+  echo "=== Authorized keys for user '$target_user' ==="
+  echo "File: $auth_keys_file"
+  echo "---"
+  if [ "$needs_sudo" = true ]; then
+    sudo cat "$auth_keys_file"
+  else
+    cat "$auth_keys_file"
+  fi
+  echo "---"
+}
+
+# Check if key exists in authorized_keys (returns 0 if exists, 1 if not)
+key_exists() {
+  local key_signature="$1"
+
+  if [ ! -f "$auth_keys_file" ]; then
+    return 1
+  fi
+
+  local file_content
+  if [ "$needs_sudo" = true ]; then
+    file_content=$(sudo cat "$auth_keys_file")
+  else
+    file_content=$(cat "$auth_keys_file")
+  fi
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+
+    local existing_signature
+    existing_signature=$(extract_key_signature "$line")
+
+    if [ "$existing_signature" = "$key_signature" ]; then
+      return 0
+    fi
+  done <<< "$file_content"
+
+  return 1
+}
+
+# Add SSH key
+add_key() {
+  local key="$1"
+  
+  validate_key "$key"
+  ensure_ssh_setup
+
+  local key_signature
+  key_signature=$(extract_key_signature "$key")
+
+  if key_exists "$key_signature"; then
+    echo "Key already exists in $auth_keys_file"
+    echo "No changes made."
+    return 0
+  fi
+
+  echo "Adding SSH key to $auth_keys_file..."
+  if [ "$needs_sudo" = true ]; then
+    echo "$key" | sudo tee -a "$auth_keys_file" > /dev/null
+  else
+    echo "$key" >> "$auth_keys_file"
+  fi
+
+  echo "SSH key added successfully for user '$target_user'."
+}
+
+# Delete SSH key
+delete_key() {
+  local key="$1"
+  
+  validate_key "$key"
+  check_auth_keys_exists
+
+  local key_signature
+  key_signature=$(extract_key_signature "$key")
+
+  if ! key_exists "$key_signature"; then
+    echo "Key not found in $auth_keys_file"
+    echo "No changes made."
+    return 0
+  fi
+
+  echo "Deleting SSH key from $auth_keys_file..."
+
+  # Create a temp file with the key removed
+  local temp_file
+  temp_file=$(mktemp)
+
+  local file_content
+  if [ "$needs_sudo" = true ]; then
+    file_content=$(sudo cat "$auth_keys_file")
+  else
+    file_content=$(cat "$auth_keys_file")
+  fi
+
+  local found=false
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Keep empty lines and comments as-is
+    if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
+      echo "$line" >> "$temp_file"
+      continue
+    fi
+
+    local existing_signature
+    existing_signature=$(extract_key_signature "$line")
+
+    if [ "$existing_signature" = "$key_signature" ]; then
+      found=true
+      # Skip this line (don't write it to temp file)
+      continue
+    fi
+
+    echo "$line" >> "$temp_file"
+  done <<< "$file_content"
+
+  # Replace original file with temp file
+  if [ "$needs_sudo" = true ]; then
+    sudo cp "$temp_file" "$auth_keys_file"
+    sudo chown "$target_user:$target_user" "$auth_keys_file"
+    sudo chmod 600 "$auth_keys_file"
+  else
+    cp "$temp_file" "$auth_keys_file"
+    chmod 600 "$auth_keys_file"
+  fi
+
+  rm -f "$temp_file"
+
+  echo "SSH key deleted successfully for user '$target_user'."
+}
+
+# Set default values
+key=""
+target_user_arg=""
+action_list=false
+action_add=false
+action_delete=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_usage
+      ;;
+    -v|--version)
+      show_version
+      ;;
+    --update)
+      self_update
+      ;;
+    -u|--user)
+      if [[ -z "$2" || "$2" == -* ]]; then
+        echo "Error: -u/--user requires a username argument."
+        exit 1
+      fi
+      target_user_arg="$2"
+      shift 2
+      ;;
+    -k|--key)
+      if [[ -z "$2" ]]; then
+        echo "Error: -k/--key requires a key argument."
+        exit 1
+      fi
+      key="$2"
+      shift 2
+      ;;
+    -l|--list)
+      action_list=true
+      shift
+      ;;
+    -a|--add)
+      action_add=true
+      shift
+      ;;
+    -d|--delete)
+      action_delete=true
+      shift
+      ;;
+    # Handle combined short options like -ak, -alk, -dk, -dlk, etc.
+    -[adluk]*)
+      # Extract the option string (without the leading -)
+      opts="${1#-}"
+      shift
+      
+      # Process each character
+      while [ -n "$opts" ]; do
+        opt="${opts:0:1}"
+        opts="${opts:1}"
+        
+        case "$opt" in
+          l)
+            action_list=true
+            ;;
+          a)
+            action_add=true
+            ;;
+          d)
+            action_delete=true
+            ;;
+          u)
+            # -u needs a value, which should be next in opts or next arg
+            if [ -n "$opts" ]; then
+              # Rest of opts might be the value, but more likely next arg
+              # Check if remaining looks like options
+              if [[ "$opts" =~ ^[adlk]+$ ]]; then
+                # It's more options, value must be next arg
+                if [[ -z "$1" || "$1" == -* ]]; then
+                  echo "Error: -u requires a username argument."
+                  exit 1
+                fi
+                target_user_arg="$1"
+                shift
+              else
+                # Remaining is probably not valid, expect next arg
+                if [[ -z "$1" || "$1" == -* ]]; then
+                  echo "Error: -u requires a username argument."
+                  exit 1
+                fi
+                target_user_arg="$1"
+                shift
+              fi
+            else
+              if [[ -z "$1" || "$1" == -* ]]; then
+                echo "Error: -u requires a username argument."
+                exit 1
+              fi
+              target_user_arg="$1"
+              shift
+            fi
+            ;;
+          k)
+            # -k needs a value
+            if [ -n "$opts" ]; then
+              # Check if remaining looks like options
+              if [[ "$opts" =~ ^[adlu]+$ ]]; then
+                # It's more options, value must be next arg
+                if [[ -z "$1" ]]; then
+                  echo "Error: -k requires a key argument."
+                  exit 1
+                fi
+                key="$1"
+                shift
+              else
+                if [[ -z "$1" ]]; then
+                  echo "Error: -k requires a key argument."
+                  exit 1
+                fi
+                key="$1"
+                shift
+              fi
+            else
+              if [[ -z "$1" ]]; then
+                echo "Error: -k requires a key argument."
+                exit 1
+              fi
+              key="$1"
+              shift
+            fi
+            ;;
+          *)
+            echo "Unknown option: -$opt"
+            show_usage
+            ;;
+        esac
+      done
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      show_usage
+      ;;
+    *)
+      # Positional argument - treat as key if not set
+      if [ -z "$key" ]; then
+        key="$1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+# Validate that at least one action is specified
+if [ "$action_list" = false ] && [ "$action_add" = false ] && [ "$action_delete" = false ]; then
+  echo "Error: No action specified. Use -l (list), -a (add), or -d (delete)."
+  echo ""
+  show_usage
+fi
+
+# Validate that add and delete aren't both specified
+if [ "$action_add" = true ] && [ "$action_delete" = true ]; then
+  echo "Error: Cannot use both -a (add) and -d (delete) at the same time."
+  exit 1
+fi
+
+# Validate key is provided for add/delete
+if [ "$action_add" = true ] || [ "$action_delete" = true ]; then
+  if [ -z "$key" ]; then
+    echo "Error: -k (key) is required for add/delete operations."
+    exit 1
+  fi
+fi
+
+# Resolve target user and paths
+resolve_target "$target_user_arg"
+
+# Perform actions
+if [ "$action_add" = true ]; then
+  add_key "$key"
+fi
+
+if [ "$action_delete" = true ]; then
+  delete_key "$key"
+fi
+
+if [ "$action_list" = true ]; then
+  echo ""
+  list_keys
+fi
