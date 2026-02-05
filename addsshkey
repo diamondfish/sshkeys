@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===================================================================================
-#  sshkeys - Description.
+#  addsshkey - Description.
 #  Version 1.0.3
 # ===================================================================================
 #  Author:  Johan Bjarnle
@@ -12,12 +12,12 @@
 set -e
 
 VERSION="1.0.3"
-REPO_URL="https://raw.githubusercontent.com/diamondfish/sshkeys/master/sshkeys"
-APP_NAME="sshkeys"
+REPO_URL="https://raw.githubusercontent.com/diamondfish/addsshkey/master/addsshkey"
+APP_NAME="addsshkey"
 INSTALL_PATH="/usr/local/bin/$APP_NAME"
 
 show_usage() {
-  echo "Usage: $APP_NAME [options] directory"
+  echo "Usage: $APP_NAME [options] key"
   echo "Description"
   echo ""
   echo "Options:"
