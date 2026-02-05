@@ -1,3 +1,5 @@
+![](assets/sshkeys_1280x640.png)
+
 # sshkeys
 
 A simple command-line tool to manage SSH authorized_keys on Ubuntu/Linux. Easily list, add, and delete SSH public keys.
